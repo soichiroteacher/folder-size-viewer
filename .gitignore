@@ -1,0 +1,8 @@
+# PyInstaller が生成するファイル
+build/
+dist/
+*.spec
+
+# Python のキャッシュ
+__pycache__/
+*.pyc
