@@ -70,6 +70,9 @@ class FolderSizeViewer:
         self.entry_names = {}  # treeitem_id -> フォルダ/ファイル名
         self.cancel_flag = threading.Event()
         self.msg_queue = queue.Queue()
+        # スキャンごとに番号を振り、中止した古いスキャンの結果が
+        # あとから届いても無視できるようにする
+        self.scan_id = 0
 
         self._build_ui()
         self.root.after(100, self._poll_queue)
@@ -174,14 +177,31 @@ class FolderSizeViewer:
             self._render(path, self.cache[path])
             return
 
-        self.cancel_flag.clear()
+        # 前のスキャンが動いていれば止め、新しいスキャン用の中止フラグを作る
+        self.cancel_flag.set()
+        self.cancel_flag = threading.Event()
+        self.scan_id += 1
+
+        # 前の一覧を残すと、中止・エラー後にダブルクリックで
+        # 違う場所のパスを組み立ててしまうため、いったん空にする
+        self.tree.delete(*self.tree.get_children())
+        self.entry_names = {}
+
         self._set_scanning(True)
         self.status_var.set("スキャン中...")
 
-        thread = threading.Thread(target=self._scan_worker, args=(path,), daemon=True)
+        thread = threading.Thread(
+            target=self._scan_worker,
+            args=(path, self.scan_id, self.cancel_flag),
+            daemon=True,
+        )
         thread.start()
 
-    def _scan_worker(self, path):
+    def _scan_worker(self, path, scan_id, cancel_flag):
+        """別スレッドで動く。結果は msg_queue 経由でメインスレッドに渡す"""
+        def send(kind, payload):
+            self.msg_queue.put((scan_id, kind, payload))
+
         entries = []
         error_count = 0
         scanned = 0
@@ -189,16 +209,16 @@ class FolderSizeViewer:
             with os.scandir(path) as it:
                 dir_entries = list(it)
         except Exception as e:
-            self.msg_queue.put(("error", str(e)))
+            send("error", str(e))
             return
 
         for entry in dir_entries:
-            if self.cancel_flag.is_set():
-                self.msg_queue.put(("cancelled", None))
+            if cancel_flag.is_set():
+                send("cancelled", None)
                 return
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    size, ec, sc = self._dir_size(entry.path)
+                    size, ec, sc = self._dir_size(entry.path, cancel_flag)
                     error_count += ec
                     scanned += sc
                     entries.append((entry.name, True, size))
@@ -212,19 +232,21 @@ class FolderSizeViewer:
                     scanned += 1
             except Exception:
                 error_count += 1
-            if scanned % 50 == 0:
-                self.msg_queue.put(("progress", scanned))
+            send("progress", scanned)
 
+        if cancel_flag.is_set():
+            send("cancelled", None)
+            return
         entries.sort(key=lambda x: x[2], reverse=True)
-        self.msg_queue.put(("done", (path, entries, error_count)))
+        send("done", (path, entries, error_count))
 
-    def _dir_size(self, path):
+    def _dir_size(self, path, cancel_flag):
         """フォルダ以下の合計サイズを再帰的に計算する(アクセス不可はスキップ)"""
         total = 0
         error_count = 0
         scanned = 0
         for dirpath, _dirnames, filenames in os.walk(path, onerror=lambda e: None):
-            if self.cancel_flag.is_set():
+            if cancel_flag.is_set():
                 break
             for fname in filenames:
                 fp = os.path.join(dirpath, fname)
@@ -248,7 +270,9 @@ class FolderSizeViewer:
     def _poll_queue(self):
         try:
             while True:
-                kind, payload = self.msg_queue.get_nowait()
+                scan_id, kind, payload = self.msg_queue.get_nowait()
+                if scan_id != self.scan_id:
+                    continue  # 中止済みの古いスキャンからの結果は捨てる
                 if kind == "progress":
                     self.status_var.set(f"スキャン中... {payload}件処理済み")
                 elif kind == "done":
@@ -257,6 +281,7 @@ class FolderSizeViewer:
                     self._render(path, (entries, error_count))
                     self._set_scanning(False)
                 elif kind == "error":
+                    self.status_var.set("フォルダを開けませんでした")
                     messagebox.showerror("エラー", f"フォルダを開けません:\n{payload}")
                     self._set_scanning(False)
                 elif kind == "cancelled":
