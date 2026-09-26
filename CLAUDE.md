@@ -52,7 +52,7 @@ pyinstaller --onefile --windowed --name "フォルダ容量ビューア" folder_
   (`python` コマンドは Microsoft Store の仮ファイルに当たることがあるので、うまく動かないときはこのフルパスを使う)
 - PyInstaller 6.22 を上の Python に入れてある。
 - GitHub:https://github.com/soichiroteacher/folder-size-viewer(公開リポジトリ、ブランチ `main`)。
-- 配布先:`C:\Users\idolo\Documents\projects\appcopy\フォルダ構成・容量確認アプリ\`(Google ドライブ同期フォルダ)。
+- 配布先:`C:\Users\idolo\Documents\projects\appcopy\folder-size-viewer\`(Google ドライブ同期フォルダ)。
   .git を除いてフォルダごと上書きコピーする。同期中はフォルダ自体を消せないことがあるので、消さずに `cp -rf` で上書きする。
 - ビルド後に残る `build/`・`*.spec`・`__pycache__/` は消してからコピーする(`dist/` の .exe は配布用なので残す)。
 
