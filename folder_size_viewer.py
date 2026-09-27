@@ -15,6 +15,8 @@
       指定したパス以下にあるすべてのファイル(またはフォルダ)を、
       容量の大きい順に表示します。ダブルクリックすると、その場所を
       「フォルダの中身」タブで開きます。
+      「更新日」で「3年以上前」などを選ぶと、長く更新されていない
+      大きいファイル(フォルダ)だけに絞り込めます。
 
 【使い方】
   上部の「参照...」ボタンでフォルダを選ぶか、パス欄にネットワークパス
@@ -40,6 +42,9 @@
     TOP_FILES 件」だけです。全ファイルを覚えるとメモリを使いすぎるためです。
     「フォルダの中身」タブは、表示のたびにそのフォルダだけを読み直し、
     フォルダの容量はスキャン結果から取り出して表示しています。
+  - フォルダの読み直しや、入力されたパスの確認も別スレッドで行います。
+    つながらないネットワークパスは、確認だけで数十秒かかることがあるためです。
+    別スレッドの結果はすべて msg_queue で画面側(_poll_queue)に届けます。
   - .exe の作り方は build_exe.bat と README.md を参照してください。
 """
 
@@ -58,6 +63,10 @@ from tkinter import ttk, filedialog, messagebox
 TOP_FILES = 1000
 # ランキングの表示件数の選択肢
 RANK_LIMITS = ("100", "500", "1000")
+# 「更新日」で絞り込むときの選択肢(〇年以上前)。変えたいときはここを直す
+OLD_YEARS = (1, 3, 5)
+NO_FILTER = "指定しない"
+YEAR_SECONDS = 365.25 * 24 * 60 * 60
 
 
 # ====================================================================
@@ -93,6 +102,10 @@ def type_text(name, is_dir):
     if is_dir:
         return "ファイル フォルダー"
     ext = os.path.splitext(name)[1]
+    if not ext and name.startswith(".") and len(name) > 1:
+        # 「.gitignore」のように点で始まる名前は、エクスプローラーでは
+        # 名前全体を拡張子として扱う(「GITIGNORE ファイル」と表示される)
+        ext = name
     return f"{ext[1:].upper()} ファイル" if ext else "ファイル"
 
 
@@ -125,13 +138,15 @@ class ScanResult:
         self.root = root
         self.dir_sizes = {}    # フォルダのパス -> 中身の合計容量(バイト)
         self.dir_counts = {}   # フォルダのパス -> 中にあるファイル数(下の階層も含む)
-        self.dir_mtimes = {}   # フォルダのパス -> 更新日時
+        self.dir_newest = {}   # フォルダのパス -> 中のファイルで一番新しい更新日時(ファイルがなければ None)
         self.top_files = []    # (容量, パス, 更新日時) 大きい順
+        self.old_files = {}    # 年数 -> その年数以上更新されていないファイルの top_files
+        self.scanned_at = time.time()
         self.error_count = 0   # 読めなかったフォルダ・ファイルの数
         self.file_count = 0
 
 
-def scan_tree(root, cancel_flag, progress=None, top_n=TOP_FILES):
+def scan_tree(root, cancel_flag, progress=None, top_n=TOP_FILES, old_years=OLD_YEARS):
     """root 以下をすべて調べ、ScanResult を返す。中止されたら None を返す。
     progress には (ファイル数, フォルダ数) を受け取る関数を渡せる。"""
     result = ScanResult(root)
@@ -139,9 +154,20 @@ def scan_tree(root, cancel_flag, progress=None, top_n=TOP_FILES):
     parent = {root: None}
     own_size = {}              # そのフォルダ直下のファイルだけの合計
     own_count = {}
+    own_newest = {}            # そのフォルダ直下のファイルで一番新しい更新日時
     heap = []                  # 大きいファイル上位 top_n 件(最小ヒープ)
+    # 「〇年以上更新されていないファイル」の上位も別に覚えておく。
+    # 全体の上位 top_n 件から絞り込むだけだと、古いファイルがほとんど残らないため
+    cutoffs = {y: result.scanned_at - y * YEAR_SECONDS for y in old_years}
+    old_heaps = {y: [] for y in old_years}
     stack = [root]
     last_report = 0.0
+
+    def keep_top(h, item):
+        if len(h) < top_n:
+            heapq.heappush(h, item)
+        elif item[0] > h[0][0]:
+            heapq.heapreplace(h, item)
 
     while stack:
         if cancel_flag.is_set():
@@ -150,26 +176,25 @@ def scan_tree(root, cancel_flag, progress=None, top_n=TOP_FILES):
         order.append(d)
         size = 0
         count = 0
+        newest = None
         try:
             with os.scandir(d) as it:
                 for e in it:
                     try:
                         if is_real_dir(e):
                             parent[e.path] = d
-                            try:
-                                result.dir_mtimes[e.path] = e.stat(follow_symlinks=False).st_mtime
-                            except OSError:
-                                result.dir_mtimes[e.path] = None
                             stack.append(e.path)
                         else:
                             st = e.stat(follow_symlinks=False)
                             size += st.st_size
                             count += 1
                             item = (st.st_size, e.path, st.st_mtime)
-                            if len(heap) < top_n:
-                                heapq.heappush(heap, item)
-                            elif item[0] > heap[0][0]:
-                                heapq.heapreplace(heap, item)
+                            keep_top(heap, item)
+                            for y, cut in cutoffs.items():
+                                if st.st_mtime < cut:
+                                    keep_top(old_heaps[y], item)
+                            if newest is None or st.st_mtime > newest:
+                                newest = st.st_mtime
                     except OSError:
                         result.error_count += 1
         except OSError:
@@ -177,6 +202,7 @@ def scan_tree(root, cancel_flag, progress=None, top_n=TOP_FILES):
             result.error_count += 1
         own_size[d] = size
         own_count[d] = count
+        own_newest[d] = newest
         result.file_count += count
 
         now = time.monotonic()
@@ -187,14 +213,19 @@ def scan_tree(root, cancel_flag, progress=None, top_n=TOP_FILES):
     # 下の階層から順に、子フォルダの合計を親フォルダへ足し上げる
     sizes = dict(own_size)
     counts = dict(own_count)
+    newests = dict(own_newest)
     for d in reversed(order):
         p = parent[d]
         if p is not None:
             sizes[p] += sizes[d]
             counts[p] += counts[d]
+            if newests[d] is not None and (newests[p] is None or newests[d] > newests[p]):
+                newests[p] = newests[d]
     result.dir_sizes = sizes
     result.dir_counts = counts
+    result.dir_newest = newests
     result.top_files = sorted(heap, reverse=True)
+    result.old_files = {y: sorted(h, reverse=True) for y, h in old_heaps.items()}
     return result
 
 
@@ -235,10 +266,14 @@ class FolderSizeViewer:
         self.sort_desc = False
 
         self.cancel_flag = threading.Event()
+        # 別スレッドからの知らせ。(種類, 番号, 中身) の形で入る
         self.msg_queue = queue.Queue()
-        # スキャンごとに番号を振り、中止した古いスキャンの結果が
-        # あとから届いても無視できるようにする
+        # スキャン・フォルダ読み込み・パス確認のそれぞれに番号を振り、
+        # 古い(もう要らなくなった)結果があとから届いても無視できるようにする
         self.scan_id = 0
+        self.folder_req = 0
+        self.check_id = 0
+        self.loading_path = None  # 読み込み中のフォルダ(読み込み中でなければ None)
 
         self._build_ui()
         self.root.after(100, self._poll_queue)
@@ -329,8 +364,15 @@ class FolderSizeViewer:
                              width=6, state="readonly")
         combo.pack(side="left", padx=4)
         combo.bind("<<ComboboxSelected>>", lambda e: self.render_rank())
+        ttk.Label(opts, text="更新日:").pack(side="left", padx=(12, 0))
+        self.rank_old = tk.StringVar(value=NO_FILTER)
+        old_combo = ttk.Combobox(opts, textvariable=self.rank_old, width=10, state="readonly",
+                                 values=[NO_FILTER] + [f"{y}年以上前" for y in OLD_YEARS])
+        old_combo.pack(side="left", padx=4)
+        old_combo.bind("<<ComboboxSelected>>", lambda e: self.render_rank())
         self.rank_note = tk.StringVar()
-        ttk.Label(opts, textvariable=self.rank_note, foreground="#777").pack(side="left", padx=12)
+        # 説明は長くなるので、選択欄の下に 1 行とって表示する
+        ttk.Label(tab, textvariable=self.rank_note, foreground="#777", padding=(2, 0, 2, 4)).pack(fill="x")
 
         self.rank_tree = self._make_tree(tab, [
             ("rank", "順位", 45, "e"),
@@ -354,8 +396,29 @@ class FolderSizeViewer:
         if not path:
             return
         path = os.path.normpath(path)
-        if not os.path.isdir(path):
-            messagebox.showerror("エラー", f"フォルダが見つかりません:\n{path}")
+        # つながらないネットワークパスは確認だけで数十秒かかることがあるので、
+        # 画面が固まらないよう別スレッドで確かめる。結果は _on_path_checked に届く
+        self.check_id += 1
+        self.status_var.set(f"フォルダを確認しています... {path}")
+        threading.Thread(target=self._check_worker, args=(path, self.check_id), daemon=True).start()
+
+    def _check_worker(self, path, check_id):
+        """別スレッドで動く。パスがフォルダかどうかを確かめる"""
+        self.msg_queue.put(("checked", check_id, (path, os.path.isdir(path))))
+
+    def _on_path_checked(self, check_id, payload):
+        if check_id != self.check_id:
+            return  # そのあとに別のパスが指定された
+        path, ok = payload
+        if not ok:
+            if self.result:
+                self._update_status()
+            else:
+                self.status_var.set("フォルダが見つかりませんでした")
+            messagebox.showerror(
+                "エラー",
+                f"フォルダが見つかりません:\n{path}\n\n"
+                "パスが正しいか、ネットワークにつながっているかを確かめてください。")
             return
         self.root_path = path
         self.path_var.set(path)
@@ -378,10 +441,12 @@ class FolderSizeViewer:
         self._update_buttons()
         self.status_var.set("スキャン中...")
 
-        # スキャンを待たずに中身を表示する(フォルダの容量は「計算中…」)
-        if not keep_folder or not self.current or not os.path.isdir(self.current):
+        # スキャンを待たずに中身を表示する(フォルダの容量は「計算中…」)。
+        # 再スキャンのときは今いるフォルダと選んでいる項目をそのまま保つ
+        # (今いたフォルダが消えていたら、読み込みの失敗後に一番上へ戻る)
+        if not keep_folder or not self.current:
             self.current = self.root_path
-        self.show_folder(self.current)
+        self.show_folder(self.current, select_path=self._folder_selection() if keep_folder else None)
         self.render_rank()
 
         threading.Thread(
@@ -393,22 +458,29 @@ class FolderSizeViewer:
     def _scan_worker(self, path, scan_id, cancel_flag):
         """別スレッドで動く。結果は msg_queue 経由でメインスレッドに渡す"""
         def progress(files, dirs):
-            self.msg_queue.put((scan_id, "progress", (files, dirs)))
+            self.msg_queue.put(("progress", scan_id, (files, dirs)))
         try:
             result = scan_tree(path, cancel_flag, progress)
         except Exception as e:  # 想定外のエラーでも画面が固まらないようにする
-            self.msg_queue.put((scan_id, "error", str(e)))
+            self.msg_queue.put(("error", scan_id, str(e)))
             return
         if result is None:
-            self.msg_queue.put((scan_id, "cancelled", None))
+            self.msg_queue.put(("cancelled", scan_id, None))
         else:
-            self.msg_queue.put((scan_id, "done", result))
+            self.msg_queue.put(("done", scan_id, result))
 
     def _poll_queue(self):
+        """別スレッドからの知らせを受け取って画面に反映する(0.1 秒ごと)"""
         try:
             while True:
-                scan_id, kind, payload = self.msg_queue.get_nowait()
-                if scan_id != self.scan_id:
+                kind, msg_id, payload = self.msg_queue.get_nowait()
+                if kind == "folder":
+                    self._on_folder_loaded(msg_id, payload)
+                    continue
+                if kind == "checked":
+                    self._on_path_checked(msg_id, payload)
+                    continue
+                if msg_id != self.scan_id:
                     continue  # 中止済みの古いスキャンからの結果は捨てる
                 if kind == "progress":
                     files, dirs = payload
@@ -416,7 +488,7 @@ class FolderSizeViewer:
                 elif kind == "done":
                     self.result = payload
                     self.scanning = False
-                    self.show_folder(self.current, keep_selection=True)
+                    self._refresh_folder_sizes()
                     self.render_rank()
                     self._update_buttons()
                     self._update_status()
@@ -428,7 +500,7 @@ class FolderSizeViewer:
                 elif kind == "cancelled":
                     self.scanning = False
                     self._update_buttons()
-                    self.show_folder(self.current, keep_selection=True)
+                    self._refresh_folder_sizes()
                     self.render_rank()
                     self.status_var.set("スキャンを中止しました(フォルダの容量は未計算です。「再スキャン」で取り直せます)")
         except queue.Empty:
@@ -461,23 +533,57 @@ class FolderSizeViewer:
         """スキャン結果からフォルダの合計容量を取り出す(未計算なら None)"""
         return self.result.dir_sizes.get(path) if self.result else None
 
-    def show_folder(self, path, keep_selection=False, select_path=None):
-        """フォルダの中身を読み込んで表示する"""
-        selected = None
-        if keep_selection:
-            sel = self.folder_tree.selection()
-            if sel and sel[0] in self.row_paths:
-                selected = self.row_paths[sel[0]][0]
+    def _folder_selection(self):
+        """「フォルダの中身」タブで選ばれている項目のパス(なければ None)"""
+        sel = self.folder_tree.selection()
+        return self.row_paths[sel[0]][0] if sel and sel[0] in self.row_paths else None
+
+    def show_folder(self, path, select_path=None):
+        """フォルダの中身を別スレッドで読み込む。読み終わると _on_folder_loaded で表示する。
+        ネットワークが遅いと 1 つのフォルダを読むだけでも時間がかかり、
+        画面が固まってしまうため、別スレッドにしている。"""
+        self.folder_req += 1
+        self.loading_path = path
+        self.folder_label.set(f"読み込み中... {path}")
+        threading.Thread(target=self._folder_worker, args=(path, select_path, self.folder_req),
+                         daemon=True).start()
+
+    def _folder_worker(self, path, select_path, req):
+        """別スレッドで動く。フォルダ直下の一覧を読む"""
         try:
-            self.folder_items = list_folder(path)
+            items, err = list_folder(path), None
         except OSError as e:
-            messagebox.showerror("エラー", f"フォルダを開けません:\n{path}\n{e}")
-            return False
+            items, err = None, e
+        self.msg_queue.put(("folder", req, (path, select_path, items, err)))
+
+    def _on_folder_loaded(self, req, payload):
+        if req != self.folder_req:
+            return  # 読み込み中に別のフォルダを開いたので、この結果は使わない
+        path, select_path, items, err = payload
+        self.loading_path = None
+        if err is not None:
+            messagebox.showerror(
+                "エラー",
+                f"フォルダを開けませんでした:\n{path}\n\n{err}\n\n"
+                "アクセス権があるか、ネットワークにつながっているかを確かめてください。")
+            if path == self.current and path != self.root_path:
+                # 再スキャンのときに今いたフォルダが消えていた場合は、一番上に戻る
+                self.show_folder(self.root_path)
+            else:
+                if path == self.current:
+                    self.folder_items = []
+                self._render_folder()
+            return
         self.current = path
         self.path_var.set(path)
-        self._render_folder(select_path or selected)
+        self.folder_items = items
+        self._render_folder(select_path)
         self._update_buttons()
-        return True
+
+    def _refresh_folder_sizes(self):
+        """スキャンが終わったとき、今の一覧にフォルダの容量を反映する(読み直しはしない)"""
+        if self.loading_path is None and self.current:
+            self._render_folder(self._folder_selection())
 
     def _render_folder(self, select_path=None):
         tree = self.folder_tree
@@ -560,9 +666,10 @@ class FolderSizeViewer:
             self.show_folder(path)
 
     def go_up(self):
-        if not self.current or self.current == self.root_path:
+        # 読み込み中なら、その読み込み中のフォルダから 1 つ上へ
+        child = self.loading_path or self.current
+        if not child or child == self.root_path:
             return
-        child = self.current
         self.show_folder(os.path.dirname(child), select_path=child)
 
     # ---------- 「容量ランキング」タブ ----------
@@ -576,14 +683,30 @@ class FolderSizeViewer:
             return
         limit = int(self.rank_limit.get())
         is_dir = self.rank_kind.get() == "dir"
+        # 「更新日」の絞り込み(「3年以上前」なら 3、「指定しない」なら None)
+        old = self.rank_old.get()
+        years = None if old == NO_FILTER else int(old.split("年")[0])
+        old_note = f"更新日が{years}年以上前のものだけを表示しています。" if years else ""
         if is_dir:
-            # 一番上のフォルダ自身はランキングから外す
-            items = [(size, path, r.dir_mtimes.get(path)) for path, size in r.dir_sizes.items() if path != r.root]
+            # フォルダの「更新日時」は、中のファイルで一番新しいものを表示する。
+            # フォルダ自体の更新日時は直下の出し入れでしか変わらず、整理の目安にならないため
+            cutoff = r.scanned_at - years * YEAR_SECONDS if years else None
+            items = []
+            for path, size in r.dir_sizes.items():
+                if path == r.root:
+                    continue  # 一番上のフォルダ自身はランキングから外す
+                newest = r.dir_newest.get(path)
+                if cutoff is not None and (newest is None or newest >= cutoff):
+                    continue
+                items.append((size, path, newest))
             items = heapq.nlargest(limit, items)
-            self.rank_note.set("※ フォルダの容量には、その中のフォルダの分も含まれます")
+            self.rank_tree.heading("mtime", text="中の最終更新")
+            self.rank_note.set("※ フォルダの容量には、その中のフォルダの分も含まれます。"
+                               "「中の最終更新」は、中のファイルで一番新しい更新日時です。" + old_note)
         else:
-            items = r.top_files[:limit]
-            self.rank_note.set("")
+            items = (r.old_files.get(years, []) if years else r.top_files)[:limit]
+            self.rank_tree.heading("mtime", text="更新日時")
+            self.rank_note.set(old_note)
 
         for i, (size, path, mtime) in enumerate(items, start=1):
             parent_rel = os.path.relpath(os.path.dirname(path), r.root)
@@ -600,10 +723,12 @@ class FolderSizeViewer:
         if not item or item not in self.rank_paths:
             return
         path, is_dir = self.rank_paths[item][:2]
-        ok = self.show_folder(path) if is_dir else self.show_folder(os.path.dirname(path), select_path=path)
-        if ok:
-            self.notebook.select(0)
-            self.folder_tree.focus_set()
+        if is_dir:
+            self.show_folder(path)
+        else:
+            self.show_folder(os.path.dirname(path), select_path=path)
+        self.notebook.select(0)
+        self.folder_tree.focus_set()
 
     # ---------- エクスプローラー連携 ----------
     def _selected_path(self):
@@ -647,7 +772,8 @@ class FolderSizeViewer:
                         writer.writerow([name, type_text(name, is_dir), "" if size is None else size,
                                          format_time(mtime), path])
                 else:
-                    writer.writerow(["順位", "名前", "種類", "サイズ(バイト)", "ファイル数", "更新日時", "フルパス"])
+                    mtime_head = "中の最終更新日時" if self.rank_kind.get() == "dir" else "更新日時"
+                    writer.writerow(["順位", "名前", "種類", "サイズ(バイト)", "ファイル数", mtime_head, "フルパス"])
                     for iid in self.rank_tree.get_children():
                         path, is_dir, size, count = self.rank_paths[iid]
                         rank, name, _s, _c, mtime, _loc = self.rank_tree.item(iid, "values")
