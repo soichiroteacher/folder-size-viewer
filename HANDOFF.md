@@ -57,6 +57,11 @@
 
 この PC では `python` が Microsoft Store の仮ファイルに当たることがあるので、バッチの中の PyInstaller のコマンドを下の Python のフルパスで実行してもよい。
 
+## 配布(GitHub の Releases)
+.exe は Git に入れていない(`.gitignore`)ので、GitHub の「Code」→「Download ZIP」には入らない。先生方の PC へは **Releases の `folder-size-viewer.zip`** で持っていく。
+- ZIP の中身: `folder-size-viewer\` フォルダの中に `README.md`・`フォルダ容量ビューア.exe`・`spare-version\`(アプリのフォルダの一番上と同じ形)。
+- **.exe を作り直したら、新しい Release を作る。** タグは日付(例: `v2026-10-27`)。PowerShell で上の3つを `folder-size-viewer` フォルダにまとめて `Compress-Archive` で ZIP にし、`gh release create v日付 folder-size-viewer.zip --title "日付 版" --notes "変更点"` で置く。資料のファイル名はアルファベットにする(日本語のファイル名は GitHub で別の名前に変わるため)。
+
 ## 作業環境(この PC)
 - Python 3.12 を winget で入れてある:`%LOCALAPPDATA%\Programs\Python\Python312\python.exe`
   (`python` コマンドは Microsoft Store の仮ファイルに当たることがあるので、うまく動かないときはこのフルパスを使う)
