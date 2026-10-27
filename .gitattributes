@@ -1,0 +1,8 @@
+# GitHub の「Download ZIP」に入れないファイル(開発・バージョン管理用。アプリを動かすのには不要)
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.claude export-ignore
+/CLAUDE.md export-ignore
+/HANDOFF.md export-ignore
+/CHANGELOG.md export-ignore
+/source export-ignore
