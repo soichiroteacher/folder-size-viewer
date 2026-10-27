@@ -6,3 +6,7 @@
 /HANDOFF.md export-ignore
 /CHANGELOG.md export-ignore
 /source export-ignore
+
+# .exe と予備のフォルダ版は、中身を1バイトも変えずに保存する(改行の自動変換をしない)
+*.exe -text
+/spare-version/** -text
