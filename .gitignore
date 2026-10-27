@@ -1,4 +1,6 @@
-# PyInstaller が生成するファイル
+# .exe とビルドで生成されるファイル(source\build_exe.bat で作り直せるので Git には入れない)
+/フォルダ容量ビューア.exe
+/spare-version/
 build/
 dist/
 *.spec
