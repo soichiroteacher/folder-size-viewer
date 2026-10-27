@@ -61,6 +61,7 @@
 先生方の PC へは、GitHub の「Code」→「Download ZIP」で持っていく。そのため `フォルダ容量ビューア.exe` と `spare-version\` は Git に入れている(2026-10-27 から。それまでは `.gitignore` で外していたので ZIP に .exe が入らなかった)。
 - `source\`・`CLAUDE.md`・`HANDOFF.md`・`CHANGELOG.md` などは `.gitattributes` で ZIP から外している。
 - **.exe を作り直したら、.exe と `spare-version\` もコミットして push する。** 作り直すたびに履歴が約 36MB 増えるが、年に数回なら問題ない(GitHub の上限は 1 ファイル 100MB)。
+- `.gitattributes` で `.exe` と `spare-version` は改行の自動変換をしない設定にしている(しないと、予備版の中の文字のファイルの改行が変わり、元と違う中身になる)。
 
 ## 作業環境(この PC)
 - Python 3.12 を winget で入れてある:`%LOCALAPPDATA%\Programs\Python\Python312\python.exe`
