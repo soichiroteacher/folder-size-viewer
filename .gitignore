@@ -1,6 +1,5 @@
-# .exe とビルドで生成されるファイル(source\build_exe.bat で作り直せるので Git には入れない)
-/フォルダ容量ビューア.exe
-/spare-version/
+# ビルドの途中でできるファイル(source\build_exe.bat で消える・作り直せる)
+# .exe と spare-version は、GitHub の「Download ZIP」で先生方の PC へ持っていけるよう Git に入れる
 build/
 dist/
 *.spec

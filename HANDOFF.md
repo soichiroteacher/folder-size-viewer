@@ -46,7 +46,7 @@
 - `HANDOFF.md` … このメモ(後任の開発者向け)
 - `CLAUDE.md` … Claude Code 向けの短い指示(このメモを読むよう書いてある)
 - `CHANGELOG.md` … 変更の記録
-- `.gitignore` … ビルドで生成されるファイルを Git の管理から外す設定
+- `.gitignore` … ビルドの途中でできるファイルを Git の管理から外す設定(.exe と spare-version は Git に入れる)
 
 ## .exe の作り方
 `source\build_exe.bat` をダブルクリックすると、アプリのフォルダの一番上に次の 2 種類ができる(作業用の `source\build\` は最後に消える)。
@@ -57,10 +57,10 @@
 
 この PC では `python` が Microsoft Store の仮ファイルに当たることがあるので、バッチの中の PyInstaller のコマンドを下の Python のフルパスで実行してもよい。
 
-## 配布(GitHub の Releases)
-.exe は Git に入れていない(`.gitignore`)ので、GitHub の「Code」→「Download ZIP」には入らない。先生方の PC へは **Releases の `folder-size-viewer.zip`** で持っていく。
-- ZIP の中身: `folder-size-viewer\` フォルダの中に `README.md`・`フォルダ容量ビューア.exe`・`spare-version\`(アプリのフォルダの一番上と同じ形)。
-- **.exe を作り直したら、新しい Release を作る。** タグは日付(例: `v2026-10-27`)。PowerShell で上の3つを `folder-size-viewer` フォルダにまとめて `Compress-Archive` で ZIP にし、`gh release create v日付 folder-size-viewer.zip --title "日付 版" --notes "変更点"` で置く。資料のファイル名はアルファベットにする(日本語のファイル名は GitHub で別の名前に変わるため)。
+## 配布(GitHub の Download ZIP)
+先生方の PC へは、GitHub の「Code」→「Download ZIP」で持っていく。そのため `フォルダ容量ビューア.exe` と `spare-version\` は Git に入れている(2026-10-27 から。それまでは `.gitignore` で外していたので ZIP に .exe が入らなかった)。
+- `source\`・`CLAUDE.md`・`HANDOFF.md`・`CHANGELOG.md` などは `.gitattributes` で ZIP から外している。
+- **.exe を作り直したら、.exe と `spare-version\` もコミットして push する。** 作り直すたびに履歴が約 36MB 増えるが、年に数回なら問題ない(GitHub の上限は 1 ファイル 100MB)。
 
 ## 作業環境(この PC)
 - Python 3.12 を winget で入れてある:`%LOCALAPPDATA%\Programs\Python\Python312\python.exe`
